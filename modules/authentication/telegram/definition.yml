@@ -1,0 +1,34 @@
+key: telegram
+title: Telegram
+description: Log in with your Telegram account using official OpenID Connect protocol
+author: requarks.io
+logo: https://telegram.org/img/tg_logo_blue.svg
+color: '#26A5E4'
+website: https://telegram.org
+isAvailable: true
+useForm: false
+order: 10
+
+props:
+  clientId:
+    type: String
+    title: Client ID
+    hint: Bot Client ID from @BotFather → Bot Settings → Web Login
+    order: 1
+    required: true
+    
+  clientSecret:
+    type: String
+    title: Client Secret
+    hint: Bot Client Secret from @BotFather (same location as Client ID)
+    order: 2
+    required: true
+    
+  callbackURL:
+    type: String
+    title: Callback URL
+    hint: Full OAuth2 callback URL (must exactly match what you registered in @BotFather)
+    default: '/auth/telegram/callback'
+    placeholder: 'https://your-wiki.com/auth/telegram/callback'
+    order: 3
+    required: true
