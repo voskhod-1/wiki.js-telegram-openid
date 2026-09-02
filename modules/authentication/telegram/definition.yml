@@ -1,6 +1,6 @@
 key: telegram
 title: Telegram
-description: Log in with your Telegram account using official OpenID Connect protocol
+description: Log in with your Telegram account (with optional custom API proxy support)
 author: requarks.io
 logo: https://telegram.org/img/tg_logo_blue.svg
 color: '#26A5E4'
@@ -32,3 +32,11 @@ props:
     placeholder: 'https://your-wiki.com/auth/telegram/callback'
     order: 3
     required: true
+
+  customApiUrl:
+    type: String
+    title: Custom API URL (Optional)
+    hint: Leave blank to use official Telegram servers. To bypass ISP blocks, enter your proxy URL
+    default: ''
+    order: 4
+    required: false
