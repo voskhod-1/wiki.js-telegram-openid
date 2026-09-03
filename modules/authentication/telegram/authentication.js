@@ -9,8 +9,7 @@ module.exports = {
     WIKI.logger.info('[Telegram] Initializing strategy')
     WIKI.logger.info(`[Telegram] Config: clientID=${conf.clientId}, callbackURL=${conf.callbackURL}`)
     
-    // !!! ИЗМЕНЕНО: Читаем опциональный параметр из конфига
-    // Пользователь может ввести, например: "https://api.moodroow.com/telegram"
+    // Читаем опциональный параметр из конфига
     const customApiUrl = conf.customApiUrl ? conf.customApiUrl.trim() : null;
     
     let proxyHostname = null;
@@ -21,7 +20,6 @@ module.exports = {
       try {
         const parsedProxy = new URL(customApiUrl);
         proxyHostname = parsedProxy.hostname;
-        // Убираем trailing slash, чтобы корректно склеивать пути
         proxyPrefix = parsedProxy.pathname.replace(/\/$/, ''); 
         issuerBase = `https://${proxyHostname}${proxyPrefix}`;
         
@@ -40,12 +38,12 @@ module.exports = {
 
     // Функция HTTP POST запроса
     function postJSON(originalEndpoint, data, clientId, clientSecret) {
-      return new Promise((resolve, reject) =>
+      return new Promise((resolve, reject) => { // <-- ИСПРАВЛЕНО: добавлена открывающая скобка {
         WIKI.logger.info(`[Telegram] HTTP POST to original: ${originalEndpoint}`)
         
         const parsedOriginal = new URL(originalEndpoint);
         
-        // !!! ИЗМЕНЕНО: Динамическое определение хоста и пути
+        // Динамическое определение хоста и пути
         const targetHostname = proxyHostname || parsedOriginal.hostname;
         const targetPath = proxyHostname 
           ? proxyPrefix + parsedOriginal.pathname + (parsedOriginal.search || '')
@@ -70,8 +68,7 @@ module.exports = {
           }
         }
         
-        // !!! КРИТИЧНО: Если используем прокси, подменяем Host на оригинальный,
-        // чтобы Nginx знал, куда именно форвардить запрос (oauth.telegram.org или api.telegram.org)
+        // Если используем прокси, подменяем Host на оригинальный
         if (proxyHostname) {
           options.headers['Host'] = parsedOriginal.hostname;
         }
@@ -120,7 +117,7 @@ module.exports = {
         
         req.write(postData)
         req.end()
-      })
+      }) // <-- Закрывающая скобка Promise
     }
 
     const TelegramStrategy = function(options, verify) {
