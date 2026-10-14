@@ -180,11 +180,11 @@ export default class TelegramAuthentication {
     // Используйте это:
     const profile = {
       id: String(telegramId),
-      username,
+      username: username,           // Telegram 用户名
       displayName: name || username,
       name: { givenName: name || username },
-      email: generatedEmail,  // ✅ строка
-      picture: picture || '',  // ✅ строка, не массив
+      email: generatedEmail,
+      picture: picture || '',
       provider: 'telegram'
     }
     
