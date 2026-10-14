@@ -2,7 +2,7 @@ key: telegram
 title: Telegram
 description: Sign in with a Telegram account, optionally through a self-hosted API proxy.
 author: requarks.io
-logo: https://telegram.org/img/tg_logo_blue.svg
+logo: https://www.svgrepo.com/show/431985/telegram.svg
 color: '#26A5E4'
 website: https://telegram.org
 isAvailable: true
