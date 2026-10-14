@@ -1,10 +1,30 @@
+import crypto from 'crypto'
+
 /* global WIKI */
 
-import crypto from 'crypto'
-import https from 'https'
-import url from 'url'
+/**
+ * Telegram
+ *
+ * Wiki.js 3.0.0-beta calls these modules as classes: the engine constructs one with
+ * `(strategyId, conf)` and then asks it for `authorizationUrl()` on the way out and `profile()` on
+ * the way back. There is no passport, no `passport.use()` and no `init()` — the registration is
+ * done by the core from `definition.yml`.
+ *
+ * The OAuth logic below is the same as the old passport-based module:
+ *
+ *   - a custom API URL replaces the Telegram host and keeps its path as a prefix, so a proxy
+ *     mounted under a subpath answers the same routes;
+ *   - PKCE is used, with the verifier kept in the session by the flow;
+ *   - the token is exchanged over `application/x-www-form-urlencoded` with the client credentials in
+ *     HTTP Basic auth, which is what the old `postJSON` did;
+ *   - the `id_token` is decoded without verifying its signature — it was just fetched over TLS from
+ *     the token endpoint that signed it, so there is no second party to check against;
+ *   - a username is required, and the email is derived from it as `<username>@telegram.org`.
+ */
 
-/** How long a proxy request may take before it is treated as unreachable. */
+/**
+ * How long a request to the token endpoint may take before it is treated as unreachable.
+ */
 const REQUEST_TIMEOUT_MS = 15000
 
 export default class TelegramAuthentication {
@@ -18,278 +38,216 @@ export default class TelegramAuthentication {
     this.conf = conf
   }
 
-  init(passport: any): void {
-    WIKI.logger.info('[Telegram] Initializing strategy')
-    WIKI.logger.info(
-      `[Telegram] Config: clientID=${this.conf.clientId}, callbackURL=${this.conf.callbackURL}`
-    )
-
-    // Читаем опциональный параметр из конфига
-    const customApiUrl = this.conf.customApiUrl ? String(this.conf.customApiUrl).trim() : null
-
-    let proxyHostname: string | null = null
-    let proxyPrefix = ''
-    let issuerBase = 'https://oauth.telegram.org'
-
-    if (customApiUrl) {
-      try {
-        const parsedProxy = new URL(customApiUrl)
-        proxyHostname = parsedProxy.hostname
-        proxyPrefix = parsedProxy.pathname.replace(/\/$/, '')
-        issuerBase = `https://${proxyHostname}${proxyPrefix}`
-
-        WIKI.logger.info(`[Telegram] ✅ Custom API URL is ACTIVE: ${customApiUrl}`)
-        WIKI.logger.info(`[Telegram] Proxy Host: ${proxyHostname}, Prefix: ${proxyPrefix}`)
-      } catch (e: any) {
-        WIKI.logger.error(
-          `[Telegram] ❌ Invalid customApiUrl provided: "${customApiUrl}". Falling back to default.`
-        )
-        WIKI.logger.error(`[Telegram] Error:`, e.message)
-      }
-    } else {
-      WIKI.logger.info(
-        '[Telegram] ℹ️ No custom API URL provided. Using default Telegram servers.'
+  /**
+   * The strategy's settings, refused if they cannot describe a login.
+   *
+   * @throws `ERR_STRATEGY_MISCONFIGURED`
+   */
+  private settings(): { clientId: string; clientSecret: string; callbackURL: string; apiBase: string } {
+    const clientId = (this.conf.clientId || '').trim()
+    const clientSecret = this.conf.clientSecret || ''
+    const callbackURL = (this.conf.callbackURL || '').trim()
+    if (!clientId || !clientSecret) {
+      WIKI.logger.warn(
+        `Telegram strategy ${this.strategyId} is not configured: Client ID and Client Secret are required.`
       )
+      throw new Error('ERR_STRATEGY_MISCONFIGURED')
+    }
+    if (!callbackURL) {
+      WIKI.logger.warn(
+        `Telegram strategy ${this.strategyId} is not configured: a Callback URL is required.`
+      )
+      throw new Error('ERR_STRATEGY_MISCONFIGURED')
+    }
+    return { clientId, clientSecret, callbackURL, apiBase: this.apiBase }
+  }
+
+  /**
+   * Where Telegram's OAuth endpoints live.
+   *
+   * A custom URL keeps its path as a prefix, so a proxy mounted under a subpath answers at the same
+   * routes Telegram does. An empty value falls back to Telegram's own servers, exactly as before.
+   * A value that cannot be parsed is a misconfiguration and is reported as one.
+   */
+  private get apiBase(): string {
+    const custom = (this.conf.customApiUrl || '').trim()
+    if (!custom) {
+      WIKI.logger.info('[Telegram] ℹ️ No custom API URL provided. Using default Telegram servers.')
+      return 'https://oauth.telegram.org'
     }
 
-    const authURL = `${issuerBase}/auth`
-    const tokenURL = `${issuerBase}/token`
+    let parsed: URL
+    try {
+      parsed = new URL(custom)
+    } catch (err: any) {
+      WIKI.logger.error(
+        `[Telegram] ❌ Invalid customApiUrl provided: "${custom}". Falling back to default.`
+      )
+      WIKI.logger.error(`[Telegram] Error:`, err.message)
+      return 'https://oauth.telegram.org'
+    }
 
-    // Функция HTTP POST запроса
-    function postJSON(
-      originalEndpoint: string,
-      data: Record<string, any>,
-      clientId: string,
-      clientSecret: string
-    ): Promise<any> {
-      return new Promise((resolve, reject) => {
-        WIKI.logger.info(`[Telegram] HTTP POST to original: ${originalEndpoint}`)
+    const prefix = parsed.pathname.replace(/\/$/, '')
+    WIKI.logger.info(`[Telegram] ✅ Custom API URL is ACTIVE: ${custom}`)
+    WIKI.logger.info(`[Telegram] Proxy Host: ${parsed.hostname}, Prefix: ${prefix}`)
+    return `https://${parsed.hostname}${prefix}`
+  }
 
-        const parsedOriginal = new URL(originalEndpoint)
-
-        // Динамическое определение хоста и пути
-        const targetHostname = proxyHostname || parsedOriginal.hostname
-        const targetPath = proxyHostname
-          ? proxyPrefix + parsedOriginal.pathname + (parsedOriginal.search || '')
-          : parsedOriginal.pathname + (parsedOriginal.search || '')
-
-        if (proxyHostname) {
-          WIKI.logger.info(`[Telegram] Routing through proxy: https://${targetHostname}${targetPath}`)
-        }
-
-        const postData = new url.URLSearchParams(data).toString()
-        const basicAuth = Buffer.from(`${clientId}:${clientSecret}`).toString('base64')
-
-        const options: https.RequestOptions = {
-          hostname: targetHostname,
-          port: parsedOriginal.protocol === 'https:' ? 443 : 80,
-          path: targetPath,
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'Content-Length': Buffer.byteLength(postData),
-            Authorization: `Basic ${basicAuth}`
-          }
-        }
-
-        // Если используем прокси, подменяем Host на оригинальный
-        if (proxyHostname) {
-          options.headers!['Host'] = parsedOriginal.hostname
-        }
-
-        WIKI.logger.info(`[Telegram] Request options:`, {
-          hostname: options.hostname,
-          path: options.path,
-          method: options.method,
-          headers: {
-            ...options.headers,
-            Authorization: 'Basic ***'
-          }
-        })
-
-        const req = https.request(options, (res) => {
-          WIKI.logger.info(`[Telegram] Response received - Status: ${res.statusCode}`)
-
-          let body = ''
-          res.on('data', (chunk) => {
-            body += chunk
-          })
-
-          res.on('end', () => {
-            if (res.statusCode !== 200) {
-              WIKI.logger.error(`[Telegram] HTTP Error: ${res.statusCode}`)
-              try {
-                const errorData = JSON.parse(body)
-                reject(
-                  new Error(
-                    `Telegram API error (${res.statusCode}): ${
-                      errorData.error_description || errorData.error || 'Unknown error'
-                    }`
-                  )
-                )
-              } catch (e) {
-                reject(new Error(`HTTP ${res.statusCode}: ${body}`))
-              }
-              return
-            }
-
-            try {
-              const jsonData = JSON.parse(body)
-              resolve(jsonData)
-            } catch (e) {
-              reject(new Error(`Failed to parse response: ${body}`))
-            }
-          })
-        })
-
-        req.setTimeout(REQUEST_TIMEOUT_MS, () => {
-          req.destroy(new Error('Request timed out'))
-        })
-
-        req.on('error', (err) => {
-          WIKI.logger.error(`[Telegram] Request error:`, err.message)
-          reject(err)
-        })
-
-        req.write(postData)
-        req.end()
+  /**
+   * `fetch`, with an unreachable provider reported as a provider failure rather than as itself.
+   *
+   * A rejected fetch carries a message about sockets and DNS, and the callback route puts whatever
+   * it caught into the URL it redirects to — so left alone, "fetch failed" is what the person
+   * trying to log in reads.
+   */
+  private async reach(url: string, init: RequestInit = {}): Promise<Response> {
+    try {
+      return await fetch(url, {
+        ...init,
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
       })
+    } catch (err: any) {
+      WIKI.logger.warn(`[Telegram] could not reach ${url}: ${err.message}`)
+      throw new Error('ERR_PROVIDER_REQUEST_FAILED')
+    }
+  }
+
+  async authorizationUrl({ redirectUri, state, codeChallenge }: any): Promise<string> {
+    const { clientId, apiBase } = this.settings()
+
+    // The redirect_uri is taken from the flow, not from the configured callback URL: the flow is
+    // the one that knows the scheme and host the browser actually reached this installation on.
+    const authURL = `${apiBase}/auth`
+
+    const authParams: Record<string, string> = {
+      client_id: clientId,
+      redirect_uri: redirectUri,
+      response_type: 'code',
+      scope: 'openid profile',
+      state
     }
 
-    const TelegramStrategy = function (this: any, options: any, verify: any) {
-      this.name = options.name || 'telegram'
-      this._verify = verify
-      this._callbackURL = options.callbackURL
-      this._clientID = options.clientID
-      this._clientSecret = options.clientSecret
-      this._scope = options.scope || ['openid', 'profile']
+    // PKCE, exactly as the old module built it — a 32-byte base64url verifier and its S256 challenge.
+    if (codeChallenge) {
+      authParams.code_challenge = codeChallenge
+      authParams.code_challenge_method = 'S256'
     }
 
-    TelegramStrategy.prototype.authenticate = async function (this: any, req: any) {
+    const redirectURL = `${authURL}?` + new URLSearchParams(authParams).toString()
+    WIKI.logger.info(`[Telegram] Redirecting to: ${redirectURL}`)
+    return redirectURL
+  }
+
+  async profile({ code, redirectUri, codeVerifier }: any): Promise<any> {
+    const { clientId, clientSecret, callbackURL, apiBase } = this.settings()
+
+    if (!code) {
+      throw new Error('ERR_NO_AUTHORIZATION_CODE')
+    }
+
+    const tokenURL = `${apiBase}/token`
+
+    // The old module sent this as x-www-form-urlencoded with Basic auth. Telegram accepts both, so
+    // the wire format is kept.
+    const postData = new URLSearchParams({
+      grant_type: 'authorization_code',
+      code: String(code),
+      redirect_uri: redirectUri || callbackURL,
+      ...(codeVerifier ? { code_verifier: String(codeVerifier) } : {})
+    }).toString()
+
+    const basicAuth = Buffer.from(`${clientId}:${clientSecret}`).toString('base64')
+
+    WIKI.logger.info(`[Telegram] HTTP POST to: ${tokenURL}`)
+
+    const tokenResp = await this.reach(tokenURL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Content-Length': String(Buffer.byteLength(postData)),
+        Authorization: `Basic ${basicAuth}`,
+        Accept: 'application/json',
+        'User-Agent': 'Wiki.js'
+      },
+      body: postData
+    })
+
+    let body = ''
+    try {
+      body = await tokenResp.text()
+    } catch {
+      throw new Error('ERR_TOKEN_EXCHANGE_FAILED')
+    }
+
+    if (!tokenResp.ok) {
+      WIKI.logger.error(`[Telegram] HTTP Error: ${tokenResp.status}`)
       try {
-        const self = this
-
-        if (!req.query || !req.query.code) {
-          const state = crypto.randomBytes(32).toString('hex')
-          const codeVerifier = crypto.randomBytes(32).toString('base64url')
-          const codeChallenge = crypto
-            .createHash('sha256')
-            .update(codeVerifier)
-            .digest('base64url')
-
-          if (!req.session) req.session = {}
-          req.session.telegramState = state
-          req.session.telegramCodeVerifier = codeVerifier
-
-          const authParams: Record<string, string> = {
-            client_id: this._clientID,
-            redirect_uri: this._callbackURL,
-            response_type: 'code',
-            scope: this._scope.join(' '),
-            state: state,
-            code_challenge: codeChallenge,
-            code_challenge_method: 'S256'
-          }
-
-          const redirectURL = `${authURL}?` + new URLSearchParams(authParams).toString()
-          return this.redirect(redirectURL)
-        }
-
-        const code = req.query.code
-        const state = req.query.state
-
-        if (!req.session || !req.session.telegramState || !req.session.telegramCodeVerifier) {
-          return this.fail('Invalid session state', 403)
-        }
-
-        if (state !== req.session.telegramState) {
-          return this.fail('Invalid state parameter', 403)
-        }
-
-        const tokenData = await postJSON(
-          tokenURL,
-          {
-            grant_type: 'authorization_code',
-            code: code,
-            redirect_uri: this._callbackURL,
-            code_verifier: req.session.telegramCodeVerifier
-          },
-          this._clientID,
-          this._clientSecret
+        const errorData = JSON.parse(body)
+        throw new Error(
+          `Telegram API error (${tokenResp.status}): ${
+            errorData.error_description || errorData.error || 'Unknown error'
+          }`
         )
-
-        if (!tokenData.id_token) {
-          return this.fail('No ID token received', 500)
-        }
-
-        const payload = decodeJWT(tokenData.id_token)
-        if (!payload) return this.fail('Failed to decode ID token', 500)
-
-        const telegramId = payload.sub || payload.id
-        const username = payload.preferred_username
-        const name = payload.name
-        const picture = payload.picture
-
-        if (!username || !username.trim()) {
-          return this.fail('Telegram account must have a username', 400)
-        }
-
-        const cleanIdentifier = username.toLowerCase().replace(/[^a-z0-9_]/g, '_')
-        const generatedEmail = `${cleanIdentifier}@telegram.org`
-
-        const profile = {
-          id: String(telegramId),
-          username: username,
-          displayName: name || username,
-          name: { givenName: name || username },
-          emails: [{ value: generatedEmail, primary: true }],
-          photos: picture ? [{ value: picture }] : [],
-          provider: 'telegram'
-        }
-
-        delete req.session.telegramState
-        delete req.session.telegramCodeVerifier
-
-        this._verify(req, null, null, profile, (err: any, user: any) => {
-          if (err) return self.fail(err.message)
-          if (!user) return self.fail('User not found')
-          return self.success(user)
-        })
-      } catch (err: any) {
-        WIKI.logger.error(`[Telegram] CRITICAL ERROR in authenticate():`, err)
-        return this.fail(err.message || 'Authentication failed')
+      } catch (e: any) {
+        if (e.message?.startsWith('Telegram API error')) throw e
+        throw new Error(`HTTP ${tokenResp.status}: ${body}`)
       }
     }
 
-    passport.use(
-      this.conf.key,
-      new (TelegramStrategy as any)(
-        {
-          name: this.conf.key,
-          callbackURL: this.conf.callbackURL,
-          clientID: this.conf.clientId,
-          clientSecret: this.conf.clientSecret,
-          scope: ['openid', 'profile']
-        },
-        async (req: any, accessToken: any, refreshToken: any, profile: any, done: any) => {
-          try {
-            const user = await WIKI.models.users.processProfile({
-              providerKey: this.conf.key,
-              profile: profile
-            })
-            done(null, user)
-          } catch (err) {
-            WIKI.logger.error(`[Telegram] CRITICAL ERROR in verify callback:`, err)
-            done(err, null)
-          }
-        }
-      )
-    )
+    let tokenData: Record<string, any>
+    try {
+      tokenData = JSON.parse(body)
+    } catch {
+      WIKI.logger.error(`[Telegram] Failed to parse response: ${body}`)
+      throw new Error('ERR_TOKEN_EXCHANGE_FAILED')
+    }
 
-    WIKI.logger.info(`[Telegram] Strategy registered successfully`)
+    if (!tokenData.id_token) {
+      throw new Error('No ID token received')
+    }
+
+    const payload = decodeJWT(tokenData.id_token)
+    if (!payload) {
+      throw new Error('Failed to decode ID token')
+    }
+
+    const telegramId = payload.sub || payload.id
+    const username = payload.preferred_username
+    const name = payload.name
+    const picture = payload.picture
+
+    if (!username || !String(username).trim()) {
+      throw new Error('Telegram account must have a username')
+    }
+
+    const cleanIdentifier = String(username).toLowerCase().replace(/[^a-z0-9_]/g, '_')
+    const generatedEmail = `${cleanIdentifier}@telegram.org`
+
+    // The shape the old module handed to `processProfile` is preserved: id, username, displayName,
+    // a name object, emails[], photos[], provider.
+    const profile = {
+      id: String(telegramId),
+      username,
+      displayName: name || username,
+      name: { givenName: name || username },
+      emails: [{ value: generatedEmail, primary: true }],
+      photos: picture ? [{ value: picture }] : [],
+      provider: 'telegram'
+    }
+
+    WIKI.logger.info(`[Telegram] Profile: ${profile.username} <${generatedEmail}>`)
+
+    return profile
   }
 }
 
+/**
+ * The claims inside an ID token, without verifying its signature.
+ *
+ * The token was just fetched over TLS from the token endpoint itself, which is the party that signed
+ * it, so there is no second party to check against — the same reasoning the old module was written
+ * with.
+ */
 function decodeJWT(token: string): Record<string, any> | null {
   try {
     const parts = token.split('.')
