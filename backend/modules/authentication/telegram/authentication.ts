@@ -177,12 +177,12 @@ export default class TelegramAuthentication {
       throw new Error('Failed to generate a valid email address')
     }
 
+    // Используйте это:
     const profile = {
       id: String(telegramId),
       email: generatedEmail,
-      displayName: name || username,
+      displayName: name || username || 'Telegram User', // ✅ строка
       picture: picture || '',
-      username: username,  // попробуйте передать как отдельное поле
       provider: 'telegram'
     }
     
