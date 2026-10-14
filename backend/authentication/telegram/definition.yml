@@ -1,0 +1,36 @@
+key: telegram
+title: Telegram
+description: Sign in with a Telegram account, optionally through a self-hosted API proxy.
+author: requarks.io
+logo: https://telegram.org/img/tg_logo_blue.svg
+color: '#26A5E4'
+website: https://telegram.org
+isAvailable: true
+useForm: false
+order: 10
+props:
+  clientId:
+    type: String
+    title: Client ID
+    hint: From @BotFather under Bot Settings → Web Login.
+    icon: key
+    order: 1
+  clientSecret:
+    type: String
+    title: Client Secret
+    hint: From the same @BotFather screen as the Client ID.
+    icon: password
+    sensitive: true
+    order: 2
+  customApiUrl:
+    type: String
+    title: Custom API URL
+    hint: (optional) Base URL of a self-hosted Telegram OAuth proxy, e.g. https://oauth.example.com. Leave empty to use oauth.telegram.org.
+    icon: server
+    order: 3
+refs:
+  callbackUrl:
+    title: Authorization Callback URL
+    hint: Set this as the callback URL in @BotFather — it must match exactly.
+    icon: back
+    value: '{host}/_api/auth/{id}/callback'
