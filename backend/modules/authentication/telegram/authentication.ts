@@ -177,16 +177,17 @@ export default class TelegramAuthentication {
       throw new Error('Failed to generate a valid email address')
     }
 
+    // Используйте это:
     const profile = {
-      id: telegramId,
-      username: username,
-      displayName: name,
-      name: { givenName: name },
-      emails: [{ value: generatedEmail, primary: true }],
-      photos: picture ? [{ value: picture }] : [],
+      id: String(telegramId),
+      username,
+      displayName: name || username,
+      name: { givenName: name || username },
+      email: generatedEmail,  // ✅ строка
+      picture: picture || '',  // ✅ строка, не массив
       provider: 'telegram'
     }
-
+    
     WIKI.logger.info(`[Telegram] Profile: ${profile.username} <${generatedEmail}>`)
 
     return profile
